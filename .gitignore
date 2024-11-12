@@ -1,0 +1,9 @@
+*
+
+!/src
+!/src/**
+!/.cljfmt.edn
+!/.gitignore
+!/bb.edn
+!/deps.edn
+!/README.md

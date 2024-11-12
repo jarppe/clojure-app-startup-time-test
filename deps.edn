@@ -1,0 +1,17 @@
+{:paths   ["src/main"]
+ :deps    {org.clojure/clojure {:mvn/version "1.12.0"}}
+
+ :aliases {:dev   {:paths      ["src/build"]
+                   :extra-deps {org.slf4j/slf4j-nop           {:mvn/version "2.0.16"}
+                                io.github.clojure/tools.build {:git/tag    "v0.10.5"
+                                                               :git/sha    "2a21b7a"
+                                                               :exclusions [org.slf4j/slf4j-nop]}}}
+
+           :build {:paths      ["src/build"]
+                   :deps       {org.slf4j/slf4j-nop           {:mvn/version "2.0.16"}
+                                io.github.clojure/tools.build {:git/tag    "v0.10.5"
+                                                               :git/sha    "2a21b7a"
+                                                               :exclusions [org.slf4j/slf4j-nop]}}
+                   :ns-default build}
+
+           :graal {:extra-deps {com.github.clj-easy/graal-build-time {:mvn/version "1.0.5"}}}}}

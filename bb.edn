@@ -1,0 +1,130 @@
+{:tasks {:requires       ([clojure.string :as str]
+                          [clojure.java.io :as io]
+                          [babashka.process :as p]
+                          [babashka.fs :as fs]
+                          [babashka.http-client :as http])
+
+         :init           (do (def java  "./leyden/bin/java")
+                             (def tests [["src-jar"  [java "-cp" "./target/src.jar:./target/libs/*" "clojure.main" "-m" "p.main"]]
+                                         ["aot-jar"  [java "-cp" "./target/aot.jar:./target/libs/*" "clojure.main" "-m" "p.main"]]
+                                         ["uber-jar" [java "-jar" "./target/uber.jar"]]
+                                         ["cds-jar"  [java "-XX:CacheDataStore=./target/app.cds" "-XX:+UseSerialGC" "-jar" "./target/uber.jar"]]
+                                         ["graalvm"  ["./target/native-app"]]]))
+
+         init            {:doc  "Init Leyden, GraalVM, build test app, and run perf tests"
+                          :task (do (run 'install:leyden)
+                                    (run 'install:graalvm)
+                                    (run 'build)
+                                    (run 'test)
+                                    (run 'perf))}
+
+         build           {:doc  "Generate test code and build artifacts"
+                          :task (do (println "build: building...")
+                                    (clojure "-T:build" "build-all")
+                                    (println "build: artifact sizes:")
+                                    (println "    src jar:" (format "%7d kB" (-> (io/file "./target/src.jar") (.length) (quot 1024))))
+                                    (println "    aot jar:" (format "%7d kB" (-> (io/file "./target/aot.jar") (.length) (quot 1024))))
+                                    (println "   über jar:" (format "%7d kB" (-> (io/file "./target/uber.jar") (.length) (quot 1024))))
+                                    (println "        CDS:" (format "%7d kB" (-> (+ (-> (io/file "./target/app.cds") (.length))
+                                                                                    (-> (io/file "./target/app.cds.code") (.length)))
+                                                                                 (quot 1024))))
+                                    (println "     native:" (format "%7d kB" (-> (io/file "./target/native-app") (.length) (quot 1024)))))}
+
+         test            {:doc  "Test artifacts"
+                          :task (do (println "test: testing... (be patient, this takes about 5 mins)")
+                                    (doseq [[test-name cmd] tests]
+                                      (print (format "test: %10s: " test-name)) (.flush *out*)
+                                      (let [stat (-> (apply p/process {:out :string} cmd)
+                                                     (deref))]
+                                        (if (-> stat :exit (not= 0))
+                                          (println (str "ERROR: exit " (-> stat :exit)))
+                                          (println (str "OK: " (-> stat :out (str/trim))))))))}
+
+         perf            {:doc  "Run perf tests"
+                          :task (let [ptime  (fn [cmd]
+                                               (let [start (System/currentTimeMillis)
+                                                     exit  (-> (apply p/process {:out :string} cmd)
+                                                               (deref)
+                                                               :exit)
+                                                     end   (System/currentTimeMillis)]
+                                                 (when-not (zero? exit)
+                                                   (throw (ex-info (apply str "process fail:" cmd) {:exit exit})))
+                                                 (- end start)))
+                                      ptimes (fn [test-name cmd]
+                                               (reduce min (repeatedly 5 (fn [] (ptime cmd)))))]
+                                  (println "perf: testing...")
+                                  (doseq [[test-name cmd] tests]
+                                    (print (format "perf: %10s: " test-name)) (.flush *out*)
+                                    (let [result (ptimes test-name cmd)]
+                                      (println (format "%6.3f sec" (/ result 1000.0))))))}
+
+         install:leyden  {:doc  "Download Leyden JDK"
+                          :task (let [leyden-jdk   "24"
+                                      leyden-build "2-8"
+                                      target       "leyden"
+                                      tar-file     (str target "/openjdk-leyden.tar.gz")
+                                      os           (case (System/getProperty "os.name")
+                                                     "Mac OS X" "macos"
+                                                     "Linux"    "linux")
+                                      arch         (System/getProperty "os.arch")
+                                      url          (format "https://download.java.net/java/early_access/leyden/2/openjdk-%s-leyden+%s_%s-%s_bin.tar.gz"
+                                                           leyden-jdk
+                                                           leyden-build
+                                                           os
+                                                           arch)]
+                                  (when (not (fs/exists? target))
+                                    (fs/create-dir target))
+                                  (print "Downloading" tar-file "... ") (.flush *out*)
+                                  (if (fs/exists? tar-file)
+                                    (println "SKIPPED: Already downloaded")
+                                    (do (-> (http/get url {:as :stream})
+                                            :body
+                                            (io/copy (io/file tar-file)))
+                                        (println "DONE")))
+                                  (print "Extracting" tar-file "... ") (.flush *out*)
+                                  (if (fs/exists? (str target "/bin"))
+                                    (println "SKIPPED: Alrerady extracted")
+                                    (do (shell "tar"
+                                               "-C" target
+                                               (str "--strip-components=" (if (= os "macos") 4 1))
+                                               "-xzf"
+                                               tar-file)
+                                        (println "DONE")))
+                                  (println "\nTesting:")
+                                  (shell (str target "/bin/java --version")))}
+
+         install:graalvm {:doc  "Download GraalVM"
+                          :task (let [graalvm-version "23"
+                                      target          "graalvm"
+                                      os              (case (System/getProperty "os.name")
+                                                        "Mac OS X" "macos"
+                                                        "Linux"    "linux")
+                                      arch            (System/getProperty "os.arch")
+                                      tar-file        (str target "/graalvm-jdk.tar.gz")
+                                      url             (format "https://download.oracle.com/graalvm/%1s/latest/graalvm-jdk-%1$s_%2$s-%3$s_bin.tar.gz"
+                                                              graalvm-version
+                                                              os
+                                                              arch)]
+                                  (when (not (fs/exists? target))
+                                    (fs/create-dir target))
+                                  (print "Downloading" url "... ") (.flush *out*)
+                                  (if (fs/exists? tar-file)
+                                    (println "SKIPPED: Already downloaded")
+                                    (do (-> (http/get url {:as :stream})
+                                            :body
+                                            (io/copy (io/file tar-file)))
+                                        (println "DONE")))
+                                  (print "Extracting" tar-file "... ") (.flush *out*)
+                                  (if (fs/exists? (str target "/bin"))
+                                    (println "SKIPPED: Already extracted")
+                                    (do (shell "tar"
+                                               "-C" target
+                                               (str "--strip-components=" (if (= os "macos") 3 1))
+                                               "-xzf"
+                                               tar-file)
+                                        (println "DONE")))
+                                  (println "\nTesting:")
+                                  (shell (str target "/bin/java --version")))}
+
+         clean           {:doc  "Cleanup all downloaded tools and build artifacts"
+                          :task (shell "rm -fr ./leyden ./graalvm ./src/main ./target")}}}
